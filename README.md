@@ -189,7 +189,7 @@ To balance the findings list: the parts of `disk` I tested worked cleanly end-to
 
 ## Appendix: the in-container `archil` CLI
 
-Every `disk exec` container ships with `/usr/local/bin/archil` — the same Rust client used for FUSE mounts on developer machines. Useful inside `exec` for delegations, status, metrics, and (interesting) **filesystem checkpoints**.
+Every `disk exec` container ships with `/usr/local/bin/archil` — the same Rust client used for FUSE mounts on developer machines. Useful inside `exec` for delegations, status, and metrics. There's also a `checkpoints create` subcommand (see [the note below](#checkpoints-create-doesnt-work-from-exec-on-this-disk)) but it errored on every disk we tested.
 
 Version of the binary in the eu-west-1 exec container at the time of writing:
 
@@ -217,7 +217,7 @@ All subcommands accept `--log-level`, `-q/--quiet`, `-v/--verbose`, `-h/--help`.
 | `metrics` | `<MOUNTPOINT>` | Perf counters. `--json`, `--reset`. |
 | `utils get-iam-role` | – | Print the IAM role ARN for this instance (`--sts-region` to override). |
 | `utils speed-test` | `<MOUNTPOINT>` | Latency probe against the FS server. `--count <N>` (default 5 pings per endpoint). |
-| **`checkpoints create`** | `<MOUNTPOINT> <NAME>` | Snapshot the current filesystem state under a unique name (within the current branch). The presence of `branch` language hints at git-style versioning, though no `list`/`restore`/`branch` subcommands are exposed in this build. |
+| `checkpoints create` | `<MOUNTPOINT> <NAME>` | Intended to snapshot FS state under a name (must be "unique within the current branch"). **Failed for us — see the note below.** |
 
 ### Live state of our test disk inside an exec container
 
@@ -244,15 +244,21 @@ A few small observations from this output:
 - **`delegations` is empty until you `checkout` something.** Run `archil checkout /mnt/archil` and re-check — the parent dir lease will appear.
 - **`metrics` only populates after I/O happens through the mount** (it was empty at fresh container start).
 
-### Notable: `checkpoints create` (versioning)
+### `checkpoints create` doesn't work from exec on this disk
 
-This is the most interesting subcommand for downstream tooling:
+The CLI exposes `archil checkpoints create <MOUNTPOINT> <NAME>` and the help text says the name must be **"unique within the current branch"** — strongly implying Archil intends git-like branched versioning of FS state under the hood. But every invocation we tried returned the same doubly-wrapped server error:
 
 ```
-archil checkpoints create /mnt/archil my-checkpoint-name
+$ archil checkpoints create /mnt/archil eval-cp-1
+Failed to create checkpoint: ServerError("Failed to create checkpoint:
+ServerError(\"IO Error: \\\"IO_ERROR\\\"\")")
 ```
 
-The CLI says the name must be unique "within the current branch" — implying Archil maintains git-like branches of filesystem state under the hood, even if `branch` / `list` / `restore` aren't exposed as subcommands in this build. If you're using Archil as a backing store for AI training runs, CI artifacts, or dataset versioning, this is the primitive to know about.
+Tried bare, with `-v`, with `--log-level trace`, and with `archil checkout /mnt/archil` first — all identical. No checkpoint dir or other artefact appeared anywhere on the filesystem after the call.
+
+We can't tell from outside whether this is a missing capability for R2-backed disks, an account/disk gate, an exec-mount limitation (maybe checkpoints only work from a real `archil mount` FUSE mount?), or a bug. The error message is unhelpful — `Debug` of a nested `ServerError` with no detail.
+
+**Aside — what the `.archil/` dir actually contains:** while poking at this, I assumed `.archil/` might be where checkpoints are stored. It isn't. It's per-client state metadata: ~one `client-<random-id>/` subdir per session that's ever connected to the disk, each with an `unlinked/` subdir (presumably the distributed-FS equivalent of the Unix "deleted-but-still-open files survive in a graveyard" trick — clients can't reliably clean up on exit, so the server parks unlinked-but-referenced files there per-client). They were all empty in our case.
 
 ---
 
