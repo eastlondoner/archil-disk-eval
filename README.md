@@ -65,7 +65,7 @@ const prod = new Archil({ apiKey: prodKey, region: "aws-eu-west-1" });
 
 # Findings from hands-on testing
 
-Test target: `dsk-000000000000c9d3` (`user_32nK.../claude`) in `aws-eu-west-1`, backed by an R2 bucket. All evidence below was reproduced live.
+Test target: an R2-backed disk in `aws-eu-west-1`. All evidence below was reproduced live.
 
 ## 1. The `@archildata/native` reference is broken
 
@@ -197,6 +197,21 @@ To balance the findings list: the parts of `disk` I tested worked cleanly end-to
 - `disk-test.mjs` — full Node-only test covering data-plane read/write/delete, exec, and the cross-plane interactions.
 - `exec-rm-repro.sh` — minimal shareable bug repro for Finding 2.
 - `package.json` — pins `disk@^0.8.8` and aliases `@archildata/native` → `@archildata/client` so `d.mount()` works.
+- `.env.example` — copy to `.env` and fill in `DISK_ID` (plus optionally `ARCHIL_API_KEY` / `ARCHIL_REGION` / `ARCHIL_DISK_TOKEN`).
+
+Run the Node test with:
+
+```bash
+cp .env.example .env    # edit to taste
+node --env-file=.env disk-test.mjs
+```
+
+Or run the shell repro:
+
+```bash
+set -a; source .env; set +a
+./exec-rm-repro.sh
+```
 
 ## FAQ
 

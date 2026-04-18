@@ -5,8 +5,9 @@ archil.configure({
   region: "aws-eu-west-1",
 });
 
-const DISK_ID = "dsk-000000000000c9d3";
+const DISK_ID = process.env.DISK_ID;
 const TOKEN = process.env.ARCHIL_DISK_TOKEN;
+if (!DISK_ID) throw new Error("set DISK_ID (see .env.example)");
 const ROOT_INODE = 1;
 const AS_ROOT = { user: { uid: 0, gid: 0 } };
 
