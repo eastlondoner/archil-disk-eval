@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "disk": "^0.8.8",
+    "@archildata/native": "npm:@archildata/client@^0.8.8"
+  }
+}
