@@ -93,48 +93,43 @@ With that alias in place, `d.mount()` returns a real `ArchilClient` and all 25 d
 
 **Suggested fix for Archil:** change `nativeRequire("@archildata/native")` → `nativeRequire("@archildata/client")` in `src/disk.ts`. Also worth re-throwing the underlying `MODULE_NOT_FOUND` instead of swallowing it in a bare `catch {}` — it currently masks every possible load failure behind the same generic message.
 
-## 2. `disk exec` runs in an append/overwrite-only mount (no `rm`)
+## 2. `disk exec` requires `archil checkout` for deletes
 
-The biggest functional finding. The mount `exec` provides supports creating and overwriting files, but **unlink and rmdir always fail** with `EROFS`:
+Inside an `exec` container, `mkdir`, file creation, and overwrites Just Work. But `rm` and `rmdir` fail with a misleading `EROFS`:
 
 ```
 rm: cannot remove '/mnt/archil/<file>': Read-only file system
 ```
 
-This is not transient, not credential-related, and not affected by whether a data-plane client is connected. Repro script (`exec-rm-repro.sh`):
+**Workaround (per Archil):** the `archil` CLI is preinstalled at `/usr/local/bin/archil` inside every exec container. To unlock writes-within-a-folder (deletes, renames within), call `archil checkout <folder-path>` first — note the path is the **parent folder**, not the file. Archil told us they're working on removing this requirement, so this should get easier.
+
+| operation | needs `archil checkout`? |
+|---|---|
+| `mkdir` | no |
+| create file (`>`, `touch`) | no |
+| overwrite file | no |
+| `rm` a file | **yes** — checkout the parent dir |
+| `rmdir` a directory | **yes** — checkout the parent dir |
+
+Verified working pattern:
 
 ```bash
-#!/usr/bin/env bash
-set -u
-: "${ARCHIL_API_KEY:?}" "${ARCHIL_REGION:?}" "${DISK_ID:?}"
-
-FILE="repro-$(date +%s).txt"
-run() { echo; echo "\$ $*"; npx --yes disk@0.8.8 exec "$DISK_ID" "$@"; echo "-> exit=$?"; }
-
-run "echo hello > /mnt/archil/$FILE"        # create    — works
-run "cat /mnt/archil/$FILE"                 # read      — works
-run "echo overwritten > /mnt/archil/$FILE"  # overwrite — works
-run "rm -v /mnt/archil/$FILE"               # delete    — FAILS EROFS
-run "ls -la /mnt/archil/$FILE"              # still present
+disk exec "$DISK_ID" "
+  mkdir /mnt/archil/probe-dir
+  echo a > /mnt/archil/probe-dir/file.txt
+  archil checkout /mnt/archil/probe-dir   # unlocks deletes inside probe-dir
+  rm /mnt/archil/probe-dir/file.txt
+  archil checkout /mnt/archil             # unlocks deletes inside parent
+  rmdir /mnt/archil/probe-dir
+"
 ```
 
-Output (abridged):
-
-```
-$ echo hello > /mnt/archil/repro-....txt       -> exit=0
-$ echo overwritten > /mnt/archil/repro-....txt -> exit=0
-$ rm -v /mnt/archil/repro-....txt
-rm: cannot remove '/mnt/archil/repro-....txt': Read-only file system
--> exit=1
-$ ls -la /mnt/archil/repro-....txt              -> exit=0   (still there)
-```
-
-The same file is trivially removable via the data plane (`ArchilClient.unlink`), so the capability clearly exists — it just isn't exposed through the exec mount.
+The repro script (`exec-rm-repro.sh`) demonstrates the failure first, then re-runs the same delete after `archil checkout` to show the workaround.
 
 **Suggested asks for Archil:**
-1. Either support `unlink`/`rmdir` in the exec mount, or
-2. Return a more specific error than `EROFS` ("operation not supported on exec mount" would be accurate), and
-3. Document the append/overwrite-only property in both the CLI help and the README. For CI/scripting users expecting a full POSIX FS, this is a footgun.
+1. Continue removing the explicit-checkout requirement (you're already on it).
+2. Until then, return a more specific error than `EROFS` — e.g. "Read-only file system (run `archil checkout <parent>` to enable writes here)". The current error sends users in the wrong direction.
+3. Mention the `archil checkout` requirement in the `disk exec` CLI help.
 
 ## 3. Data-plane `unlink` requires extra ceremony
 
