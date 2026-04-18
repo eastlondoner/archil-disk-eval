@@ -187,6 +187,75 @@ To balance the findings list: the parts of `disk` I tested worked cleanly end-to
 
 ---
 
+## Appendix: the in-container `archil` CLI
+
+Every `disk exec` container ships with `/usr/local/bin/archil` — the same Rust client used for FUSE mounts on developer machines. Useful inside `exec` for delegations, status, metrics, and (interesting) **filesystem checkpoints**.
+
+Version of the binary in the eu-west-1 exec container at the time of writing:
+
+```
+Archil Client: v0.8.8-24-g1afee532-1776468195, 808, proto=Version2
+Build: 2026-04-17 23:23:15 UTC (1afee532)
+User Agent: rfp/Ubuntu 22.04.5 LTS/system=Linux,version=6.14.0,machine=aarch64
+```
+
+### Subcommand reference
+
+All subcommands accept `--log-level`, `-q/--quiet`, `-v/--verbose`, `-h/--help`. Most that operate on a mount take `<MOUNTPOINT>` (inside exec: `/mnt/<mount-name>`, e.g. `/mnt/archil`).
+
+| command | args | what it does |
+|---|---|---|
+| `mount` | `<MOUNT_NAME> <MOUNTPOINT>` | FUSE-mount a disk. Lots of perf knobs: `--max-cache-mb`, `--target-cache-mb`, `--max-iodepth` (128), `--enable-xattrs`, `--shared` / `--read-only` (multi-client), `--writeback-cache`, `--dentry-ttl-secs`, `--transaction-processors` (32), `--nconnect`, `--window-size` (128), `--attachment-count` (100), `--region`, `--sts-region`, `--log-dir`, `--max-log-size-mb`, `--log-metrics`, `-f/--force`. |
+| `unmount` | `<MOUNTPOINT>` | Unmount. `-f/--force` available. |
+| `version` | – | Build, proto version, user agent, latest available release. |
+| **`checkout`** | `<PATH>` | Acquire a write delegation on the inode (see Finding 2). `-f/--force` revokes any existing holder. |
+| **`checkin`** | `<PATH>` | Sync pending writes and release the delegation. |
+| `delegations` | `<MOUNTPOINT>` | List held delegations. `--json` for machine-readable. |
+| `status` | `<MOUNTPOINT>` | Disk ID, internal name, mount state, mount time, log level. |
+| `set-log-level` | `<MOUNTPOINT> <LEVEL>` | Change client log level at runtime. |
+| `set-cache-expiry` | `<PATH> --readdir-expiry <SECS>` | Tune the readdir cache TTL on a path. |
+| `metrics` | `<MOUNTPOINT>` | Perf counters. `--json`, `--reset`. |
+| `utils get-iam-role` | – | Print the IAM role ARN for this instance (`--sts-region` to override). |
+| `utils speed-test` | `<MOUNTPOINT>` | Latency probe against the FS server. `--count <N>` (default 5 pings per endpoint). |
+| **`checkpoints create`** | `<MOUNTPOINT> <NAME>` | Snapshot the current filesystem state under a unique name (within the current branch). The presence of `branch` language hints at git-style versioning, though no `list`/`restore`/`branch` subcommands are exposed in this build. |
+
+### Live state of our test disk inside an exec container
+
+```
+$ archil status /mnt/archil
+Status for mount point: /mnt/archil
+  Disk ID: dsk-000000000000c9d3
+  Disk Name: standby
+  State: Mounted
+  Mount Time: 2026-04-18 19:07:28 UTC
+  Log Level: trace
+
+$ archil delegations /mnt/archil
+Delegations:
+
+$ archil metrics /mnt/archil
+No metrics recorded.
+```
+
+A few small observations from this output:
+
+- **The exec mount runs at `trace` log level by default** — so per-syscall logs are flowing to `journald` (or `--log-dir`) the whole time the container is up. Heavy for production; presumably a debugging default for the exec environment.
+- **`status` reports a "Disk Name" of `standby`** even though the control-plane API name is `claude`. This appears to be an internal mount alias (likely the warm-pool / failover slot the FS handler is currently bound to), not the user-facing disk name. Worth knowing if you're reading status output and confused why the name doesn't match the dashboard.
+- **`delegations` is empty until you `checkout` something.** Run `archil checkout /mnt/archil` and re-check — the parent dir lease will appear.
+- **`metrics` only populates after I/O happens through the mount** (it was empty at fresh container start).
+
+### Notable: `checkpoints create` (versioning)
+
+This is the most interesting subcommand for downstream tooling:
+
+```
+archil checkpoints create /mnt/archil my-checkpoint-name
+```
+
+The CLI says the name must be unique "within the current branch" — implying Archil maintains git-like branches of filesystem state under the hood, even if `branch` / `list` / `restore` aren't exposed as subcommands in this build. If you're using Archil as a backing store for AI training runs, CI artifacts, or dataset versioning, this is the primitive to know about.
+
+---
+
 ## Test artifacts in this repo
 
 - `disk-test.mjs` — full Node-only test covering data-plane read/write/delete, exec, and the cross-plane interactions.
